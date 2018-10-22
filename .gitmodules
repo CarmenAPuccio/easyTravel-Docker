@@ -1,3 +1,7 @@
 [submodule "app/easyTravel"]
 	path = app/easyTravel
 	url = https://github.com/dynatrace-innovationlab/easyTravel-Builder.git
+[submodule "aws/submodules/quickstart-aws-vpc"]
+	path = aws/submodules/quickstart-aws-vpc
+	url = git@github.com:aws-quickstart/quickstart-aws-vpc.git
+	branch = master

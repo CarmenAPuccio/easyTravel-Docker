@@ -1,0 +1,761 @@
+{
+	"AWSTemplateFormatVersion": "2010-09-09",
+	"Description": "This template creates the easytravel application on AWS Fargate. Note that Fargate is not available in all regions. Please check the regional-product-service page at https://aws.amazon.com/about-aws/global-infrastructure/regional-product-services/. You will be billed for the AWS resources used if you create a stack from this template.",
+	"Parameters": {
+		"VPCID": {
+			"Description": "ID of the VPC (e.g., vpc-0343606e)",
+			"Type": "AWS::EC2::VPC::Id"
+		},
+		"VPCCIDR": {
+			"AllowedPattern": "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/(1[6-9]|2[0-8]))$",
+			"ConstraintDescription": "CIDR block parameter must be in the form x.x.x.x/16-28",
+			"Default": "10.0.0.0/16",
+			"Description": "CIDR Block for the VPC",
+			"Type": "String"
+		},
+		"PublicSubnet1ID": {
+			"Description": "ID of the public subnet 1 in Availability Zone 1 (e.g., subnet-e3246d8e)",
+			"Type": "AWS::EC2::Subnet::Id"
+		},
+		"PublicSubnet2ID": {
+			"Description": "ID of the public subnet 2 in Availability Zone 2 (e.g., subnet-e3246d8e)",
+			"Type": "AWS::EC2::Subnet::Id"
+		}
+	},
+	"Resources": {
+		"easyTravelServiceDiscoveryNameSpace": {
+			"Type": "AWS::ServiceDiscovery::PrivateDnsNamespace",
+			"Properties": {
+				"Description": "easyTravelServiceDiscoveryNameSpace",
+				"Vpc": {
+					"Ref": "VPCID"
+				},
+				"Name": "easytravel.local"
+			}
+		},
+		"easyTravelFargateCluster": {
+			"Type": "AWS::ECS::Cluster",
+			"Properties": {
+				"ClusterName": "easytravel"
+			}
+		},
+		"easytravelCloudwatchLogGroup": {
+			"Type": "AWS::Logs::LogGroup",
+			"Properties": {
+				"LogGroupName": "easytravel",
+				"RetentionInDays": 30
+			}
+		},
+		"easytravelECSExecutionRole": {
+			"Type": "AWS::IAM::Role",
+			"Properties": {
+				"AssumeRolePolicyDocument": {
+					"Version": "2012-10-17",
+					"Statement": [{
+						"Effect": "Allow",
+						"Principal": {
+							"Service": [
+								"ecs-tasks.amazonaws.com"
+							]
+						},
+						"Action": [
+							"sts:AssumeRole"
+						]
+					}]
+				},
+				"ManagedPolicyArns": [
+					"arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
+					"arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+				],
+				"RoleName": "easytravelExecutionRole"
+			}
+		},
+		"easytravelmongodbSecurityGroup": {
+			"Type": "AWS::EC2::SecurityGroup",
+			"Properties": {
+				"GroupDescription": "Enables access to easytravel-mongodb",
+				"VpcId": {
+					"Ref": "VPCID"
+				},
+				"SecurityGroupIngress": [{
+						"IpProtocol": "tcp",
+						"FromPort": "27017",
+						"ToPort": "27017",
+						"CidrIp": {
+							"Ref": "VPCCIDR"
+						}
+					},
+					{
+						"IpProtocol": "tcp",
+						"FromPort": "28017",
+						"ToPort": "28017",
+						"CidrIp": {
+							"Ref": "VPCCIDR"
+						}
+					}
+				],
+				"Tags": [{
+					"Key": "Name",
+					"Value": "easytravelmongodbSecurityGroup"
+				}]
+			}
+		},
+		"easytravelmongodbServiceDiscovery": {
+			"Type": "AWS::ServiceDiscovery::Service",
+			"Properties": {
+				"Name": "easytravel-mongodb",
+				"DnsConfig": {
+					"DnsRecords": [{
+						"Type": "A",
+						"TTL": "5"
+					}],
+					"NamespaceId": {
+						"Fn::GetAtt": ["easyTravelServiceDiscoveryNameSpace", "Id"]
+					}
+				},
+				"HealthCheckCustomConfig": {
+					"FailureThreshold": "1"
+				}
+			}
+		},
+		"easytravelmongodbTaskDefinition": {
+			"Type": "AWS::ECS::TaskDefinition",
+			"Properties": {
+				"RequiresCompatibilities": [
+					"FARGATE"
+				],
+				"Cpu": "512",
+				"Memory": "1024",
+				"ExecutionRoleArn": {
+					"Fn::GetAtt": ["easytravelECSExecutionRole", "Arn"]
+				},
+				"NetworkMode": "awsvpc",
+				"TaskRoleArn": {
+					"Fn::GetAtt": ["easytravelECSExecutionRole", "Arn"]
+				},
+				"ContainerDefinitions": [{
+					"Name": "easytravel-mongodb",
+					"Image": "dynatrace/easytravel-mongodb",
+					"Cpu": "512",
+					"Memory": "1024",
+					"Essential": "true",
+					"LogConfiguration": {
+						"LogDriver": "awslogs",
+						"Options": {
+							"awslogs-group": {
+								"Ref": "easytravelCloudwatchLogGroup"
+							},
+							"awslogs-region": {
+								"Ref": "AWS::Region"
+							},
+							"awslogs-stream-prefix": {
+								"Fn::Join": ["/", [{
+									"Ref": "easytravelCloudwatchLogGroup"
+								}, "easytravel-mongodb"]]
+							}
+						}
+					},
+					"PortMappings": [{
+							"ContainerPort": "27017"
+						},
+						{
+							"ContainerPort": "28017"
+						}
+					]
+				}]
+			}
+		},
+		"eastytravelmongodbFargateService": {
+			"Type": "AWS::ECS::Service",
+			"Properties": {
+				"Cluster": {
+					"Ref": "easyTravelFargateCluster"
+				},
+				"LaunchType": "FARGATE",
+				"DeploymentConfiguration": {
+					"MaximumPercent": 200,
+					"MinimumHealthyPercent": 100
+				},
+				"DesiredCount": 1,
+				"ServiceName": "easytravel-mongodb",
+				"ServiceRegistries": [{
+					"RegistryArn": {
+						"Fn::GetAtt": ["easytravelmongodbServiceDiscovery", "Arn"]
+					}
+				}],
+				"TaskDefinition": {
+					"Ref": "easytravelmongodbTaskDefinition"
+				},
+				"NetworkConfiguration": {
+					"AwsvpcConfiguration": {
+						"AssignPublicIp": "ENABLED",
+						"SecurityGroups": [{
+							"Fn::GetAtt": ["easytravelmongodbSecurityGroup", "GroupId"]
+						}],
+						"Subnets": [{
+							"Ref": "PublicSubnet1ID"
+						}, {
+							"Ref": "PublicSubnet2ID"
+						}]
+					}
+				}
+			},
+			"DependsOn": [
+				"easyTravelFargateCluster",
+				"easytravelmongodbServiceDiscovery"
+			]
+		},
+		"easytravelbackendLBSecurityGroup": {
+			"Type": "AWS::EC2::SecurityGroup",
+			"Properties": {
+				"GroupDescription": "Enables access to easytravel-backend loadbalancer",
+				"VpcId": {
+					"Ref": "VPCID"
+				},
+				"SecurityGroupIngress": [{
+					"IpProtocol": "tcp",
+					"FromPort": "80",
+					"ToPort": "80",
+					"CidrIp": "0.0.0.0/0"
+				}],
+				"Tags": [{
+					"Key": "Name",
+					"Value": "easytravelbackendLBSecurityGroup"
+				}]
+			}
+		},
+		"easytravelbackendSecurityGroup": {
+			"Type": "AWS::EC2::SecurityGroup",
+			"Properties": {
+				"GroupDescription": "Enables access to easytravel-backend",
+				"VpcId": {
+					"Ref": "VPCID"
+				},
+				"SecurityGroupIngress": [{
+					"IpProtocol": "tcp",
+					"FromPort": "8080",
+					"ToPort": "8080",
+					"SourceSecurityGroupId": {
+						"Fn::GetAtt": ["easytravelbackendLBSecurityGroup", "GroupId"]
+					}
+				}],
+				"Tags": [{
+					"Key": "Name",
+					"Value": "easytravelbackendSecurityGroup"
+				}]
+			}
+		},
+		"easytravelbackendApplicationLoadBalaner": {
+			"Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+			"Properties": {
+				"Subnets": [{
+					"Ref": "PublicSubnet1ID"
+				}, {
+					"Ref": "PublicSubnet2ID"
+				}],
+				"SecurityGroups": [{
+					"Fn::GetAtt": ["easytravelbackendLBSecurityGroup", "GroupId"]
+				}],
+				"Tags": [{
+					"Key": "Name",
+					"Value": "easytravelbackendApplicationLoadBalaner"
+				}]
+			}
+		},
+		"easytravelbackendTargetGroup": {
+			"Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+			"Properties": {
+				"VpcId": {
+					"Ref": "VPCID"
+				},
+				"Port": "80",
+				"Protocol": "HTTP",
+				"Matcher": {
+					"HttpCode": 200
+				},
+				"HealthCheckIntervalSeconds": 30,
+				"HealthCheckPath": "/",
+				"HealthCheckProtocol": "HTTP",
+				"HealthCheckTimeoutSeconds": 5,
+				"HealthyThresholdCount": 2,
+				"TargetGroupAttributes": [{
+					"Key": "deregistration_delay.timeout_seconds",
+					"Value": 300
+				}],
+				"TargetType": "ip",
+				"Tags": [{
+					"Key": "Name",
+					"Value": "easytravelbackendTargetGroup"
+				}]
+			},
+			"DependsOn": "easytravelbackendApplicationLoadBalaner"
+		},
+		"easytravelbackendLoadBalancerListener": {
+			"Type": "AWS::ElasticLoadBalancingV2::Listener",
+			"Properties": {
+				"DefaultActions": [{
+					"Type": "forward",
+					"TargetGroupArn": {
+						"Ref": "easytravelbackendTargetGroup"
+					}
+				}],
+				"LoadBalancerArn": {
+					"Ref": "easytravelbackendApplicationLoadBalaner"
+				},
+				"Port": "80",
+				"Protocol": "HTTP"
+			},
+			"DependsOn": [
+				"easytravelbackendTargetGroup",
+				"easytravelbackendApplicationLoadBalaner"
+			]
+		},
+		"easytravelbackendTaskDefinition": {
+			"Type": "AWS::ECS::TaskDefinition",
+			"Properties": {
+				"RequiresCompatibilities": [
+					"FARGATE"
+				],
+				"Cpu": "512",
+				"Memory": "1024",
+				"ExecutionRoleArn": {
+					"Fn::GetAtt": ["easytravelECSExecutionRole", "Arn"]
+				},
+				"NetworkMode": "awsvpc",
+				"TaskRoleArn": {
+					"Fn::GetAtt": ["easytravelECSExecutionRole", "Arn"]
+				},
+				"ContainerDefinitions": [{
+					"Name": "easytravel-backend",
+					"Image": "dynatrace/easytravel-backend",
+					"Cpu": "512",
+					"Memory": "1024",
+					"Essential": "true",
+					"Environment": [{
+							"Name": "CATALINA_OPTS",
+							"Value": "-Dconfig.apmServerDefault=${ET_APM_SERVER_DEFAULT} -Xmx300m"
+						},
+						{
+							"Name": "ET_DATABASE_LOCATION",
+							"Value": "easytravel-mongodb.easytravel.local:27017"
+						}
+					],
+					"LogConfiguration": {
+						"LogDriver": "awslogs",
+						"Options": {
+							"awslogs-group": {
+								"Ref": "easytravelCloudwatchLogGroup"
+							},
+							"awslogs-region": {
+								"Ref": "AWS::Region"
+							},
+							"awslogs-stream-prefix": {
+								"Fn::Join": ["/", [{
+									"Ref": "easytravelCloudwatchLogGroup"
+								}, "easytravel-backend"]]
+							}
+						}
+					},
+					"PortMappings": [{
+						"ContainerPort": "8080"
+					}]
+				}]
+			}
+		},
+		"easytravelbackendFargateService": {
+			"Type": "AWS::ECS::Service",
+			"Properties": {
+				"Cluster": {
+					"Ref": "easyTravelFargateCluster"
+				},
+				"LaunchType": "FARGATE",
+				"DeploymentConfiguration": {
+					"MaximumPercent": 200,
+					"MinimumHealthyPercent": 100
+				},
+				"DesiredCount": 1,
+				"ServiceName": "easytravel-backend",
+				"TaskDefinition": {
+					"Ref": "easytravelbackendTaskDefinition"
+				},
+				"LoadBalancers": [{
+					"ContainerName": "easytravel-backend",
+					"ContainerPort": "8080",
+					"TargetGroupArn": {
+						"Ref": "easytravelbackendTargetGroup"
+					}
+
+				}],
+				"NetworkConfiguration": {
+					"AwsvpcConfiguration": {
+						"AssignPublicIp": "ENABLED",
+						"SecurityGroups": [{
+							"Fn::GetAtt": ["easytravelbackendSecurityGroup", "GroupId"]
+						}],
+						"Subnets": [{
+							"Ref": "PublicSubnet1ID"
+						}, {
+							"Ref": "PublicSubnet2ID"
+						}]
+					}
+				}
+			},
+			"DependsOn": [
+				"easyTravelFargateCluster",
+				"easytravelbackendTargetGroup",
+				"easytravelbackendApplicationLoadBalaner",
+				"eastytravelmongodbFargateService"
+			]
+		},
+		"easytravelfrontendLBSecurityGroup": {
+			"Type": "AWS::EC2::SecurityGroup",
+			"Properties": {
+				"GroupDescription": "Enables access to easytravel-frontend loadbalancer",
+				"VpcId": {
+					"Ref": "VPCID"
+				},
+				"SecurityGroupIngress": [{
+					"IpProtocol": "tcp",
+					"FromPort": "80",
+					"ToPort": "80",
+					"CidrIp": "0.0.0.0/0"
+				}],
+				"Tags": [{
+					"Key": "Name",
+					"Value": "easytravelfrontendLBSecurityGroup"
+				}]
+			}
+		},
+		"easytravelfrontendSecurityGroup": {
+			"Type": "AWS::EC2::SecurityGroup",
+			"Properties": {
+				"GroupDescription": "Enables access to easytravel-frontend",
+				"VpcId": {
+					"Ref": "VPCID"
+				},
+				"SecurityGroupIngress": [{
+					"IpProtocol": "tcp",
+					"FromPort": "8080",
+					"ToPort": "8080",
+					"SourceSecurityGroupId": {
+						"Fn::GetAtt": ["easytravelfrontendLBSecurityGroup", "GroupId"]
+					}
+				}],
+				"Tags": [{
+					"Key": "Name",
+					"Value": "easytravelfrontendSecurityGroup"
+				}]
+			}
+		},
+		"easytravelfrontendApplicationLoadBalaner": {
+			"Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+			"Properties": {
+				"Subnets": [{
+					"Ref": "PublicSubnet1ID"
+				}, {
+					"Ref": "PublicSubnet2ID"
+				}],
+				"SecurityGroups": [{
+					"Fn::GetAtt": ["easytravelfrontendLBSecurityGroup", "GroupId"]
+				}],
+				"Tags": [{
+					"Key": "Name",
+					"Value": "easytravelfrontendApplicationLoadBalaner"
+				}]
+			}
+		},
+		"easytravelfrontendTargetGroup": {
+			"Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+			"Properties": {
+				"VpcId": {
+					"Ref": "VPCID"
+				},
+				"Port": "80",
+				"Protocol": "HTTP",
+				"Matcher": {
+					"HttpCode": 200
+				},
+				"HealthCheckIntervalSeconds": 30,
+				"HealthCheckPath": "/",
+				"HealthCheckProtocol": "HTTP",
+				"HealthCheckTimeoutSeconds": 5,
+				"HealthyThresholdCount": 2,
+				"TargetGroupAttributes": [{
+					"Key": "deregistration_delay.timeout_seconds",
+					"Value": 300
+				}],
+				"TargetType": "ip",
+				"Tags": [{
+					"Key": "Name",
+					"Value": "easytravelfrontendTargetGroup"
+				}]
+			},
+			"DependsOn": "easytravelfrontendApplicationLoadBalaner"
+		},
+		"easytravelfrontendLoadBalancerListener": {
+			"Type": "AWS::ElasticLoadBalancingV2::Listener",
+			"Properties": {
+				"DefaultActions": [{
+					"Type": "forward",
+					"TargetGroupArn": {
+						"Ref": "easytravelfrontendTargetGroup"
+					}
+				}],
+				"LoadBalancerArn": {
+					"Ref": "easytravelfrontendApplicationLoadBalaner"
+				},
+				"Port": "80",
+				"Protocol": "HTTP"
+			},
+			"DependsOn": [
+				"easytravelfrontendTargetGroup",
+				"easytravelfrontendApplicationLoadBalaner"
+			]
+		},
+		"easytravelfrontendTaskDefinition": {
+			"Type": "AWS::ECS::TaskDefinition",
+			"Properties": {
+				"RequiresCompatibilities": [
+					"FARGATE"
+				],
+				"Cpu": "512",
+				"Memory": "1024",
+				"ExecutionRoleArn": {
+					"Fn::GetAtt": ["easytravelECSExecutionRole", "Arn"]
+				},
+				"NetworkMode": "awsvpc",
+				"TaskRoleArn": {
+					"Fn::GetAtt": ["easytravelECSExecutionRole", "Arn"]
+				},
+				"ContainerDefinitions": [{
+					"Name": "easytravel-frontend",
+					"Image": "dynatrace/easytravel-frontend",
+					"Cpu": "512",
+					"Memory": "1024",
+					"Essential": "true",
+					"Environment": [{
+							"Name": "CATALINA_OPTS",
+							"Value": "-Dconfig.apmServerDefault=${ET_APM_SERVER_DEFAULT} -Xmx525m"
+						},
+						{
+							"Name": "ET_BACKEND_URL",
+							"Value": {
+								"Fn::Join": ["", [
+									"http://",
+									{
+										"Fn::GetAtt": ["easytravelbackendApplicationLoadBalaner", "DNSName"]
+									},
+									":80"
+								]]
+							}
+						}
+					],
+					"LogConfiguration": {
+						"LogDriver": "awslogs",
+						"Options": {
+							"awslogs-group": {
+								"Ref": "easytravelCloudwatchLogGroup"
+							},
+							"awslogs-region": {
+								"Ref": "AWS::Region"
+							},
+							"awslogs-stream-prefix": {
+								"Fn::Join": ["/", [{
+									"Ref": "easytravelCloudwatchLogGroup"
+								}, "easytravel-frontend"]]
+							}
+						}
+					},
+					"PortMappings": [{
+						"ContainerPort": "8080"
+					}]
+				}]
+			}
+		},
+		"easytravelfrontendFargateService": {
+			"Type": "AWS::ECS::Service",
+			"Properties": {
+				"Cluster": {
+					"Ref": "easyTravelFargateCluster"
+				},
+				"LaunchType": "FARGATE",
+				"DeploymentConfiguration": {
+					"MaximumPercent": 200,
+					"MinimumHealthyPercent": 100
+				},
+				"DesiredCount": 1,
+				"ServiceName": "easytravel-frontend",
+				"TaskDefinition": {
+					"Ref": "easytravelfrontendTaskDefinition"
+				},
+				"LoadBalancers": [{
+					"ContainerName": "easytravel-frontend",
+					"ContainerPort": "8080",
+					"TargetGroupArn": {
+						"Ref": "easytravelfrontendTargetGroup"
+					}
+
+				}],
+				"NetworkConfiguration": {
+					"AwsvpcConfiguration": {
+						"AssignPublicIp": "ENABLED",
+						"SecurityGroups": [{
+							"Fn::GetAtt": ["easytravelfrontendSecurityGroup", "GroupId"]
+						}],
+						"Subnets": [{
+							"Ref": "PublicSubnet1ID"
+						}, {
+							"Ref": "PublicSubnet2ID"
+						}]
+					}
+				}
+			},
+			"DependsOn": [
+				"easyTravelFargateCluster",
+				"easytravelfrontendTargetGroup",
+				"easytravelfrontendApplicationLoadBalaner",
+				"eastytravelmongodbFargateService",
+				"easytravelbackendFargateService"
+			]
+		},
+		"easytravelloadgenSecurityGroup": {
+			"Type": "AWS::EC2::SecurityGroup",
+			"Properties": {
+				"GroupDescription": "Enables access to easytravel-loadgen",
+				"VpcId": {
+					"Ref": "VPCID"
+				},
+				"Tags": [{
+					"Key": "Name",
+					"Value": "easytravelloadgenSecurityGroup"
+				}]
+			}
+		},
+		"easytravelloadgenTaskDefinition": {
+			"Type": "AWS::ECS::TaskDefinition",
+			"Properties": {
+				"RequiresCompatibilities": [
+					"FARGATE"
+				],
+				"Cpu": "512",
+				"Memory": "1024",
+				"ExecutionRoleArn": {
+					"Fn::GetAtt": ["easytravelECSExecutionRole", "Arn"]
+				},
+				"NetworkMode": "awsvpc",
+				"TaskRoleArn": {
+					"Fn::GetAtt": ["easytravelECSExecutionRole", "Arn"]
+				},
+				"ContainerDefinitions": [{
+					"Name": "easytravel-loadgen",
+					"Image": "dynatrace/easytravel-loadgen",
+					"Cpu": "512",
+					"Memory": "1024",
+					"Essential": "true",
+					"Environment": [{
+							"Name": "ET_APM_SERVER_DEFAULT",
+							"Value": "${ET_APM_SERVER_DEFAULT}"
+						},
+						{
+							"Name": "ET_FRONTEND_URL",
+							"Value": {
+								"Fn::Join": ["", [
+									"http://",
+									{
+										"Fn::GetAtt": ["easytravelfrontendApplicationLoadBalaner", "DNSName"]
+									},
+									":80"
+								]]
+							}
+						},
+						{
+							"Name": "ET_BACKEND_URL",
+							"Value": {
+								"Fn::Join": ["", [
+									"http://",
+									{
+										"Fn::GetAtt": ["easytravelbackendApplicationLoadBalaner", "DNSName"]
+									},
+									":80"
+								]]
+							}
+						},
+						{
+							"Name": "ET_PROBLEMS",
+							"Value": "BadCacheSynchronization,CPULoad,DatabaseCleanup,DatabaseSlowdown,FetchSizeTooSmall,JourneySearchError404,JourneySearchError500,LoginProblems,MobileErrors,TravellersOptionBox"
+						}
+					],
+					"LogConfiguration": {
+						"LogDriver": "awslogs",
+						"Options": {
+							"awslogs-group": {
+								"Ref": "easytravelCloudwatchLogGroup"
+							},
+							"awslogs-region": {
+								"Ref": "AWS::Region"
+							},
+							"awslogs-stream-prefix": {
+								"Fn::Join": ["/", [{
+									"Ref": "easytravelCloudwatchLogGroup"
+								}, "easytravel-loadgen"]]
+							}
+						}
+					},
+					"PortMappings": [{
+						"ContainerPort": "8080"
+					}]
+				}]
+			}
+		},
+		"eastytravelloadgenFargateService": {
+			"Type": "AWS::ECS::Service",
+			"Properties": {
+				"Cluster": {
+					"Ref": "easyTravelFargateCluster"
+				},
+				"LaunchType": "FARGATE",
+				"DeploymentConfiguration": {
+					"MaximumPercent": 200,
+					"MinimumHealthyPercent": 100
+				},
+				"DesiredCount": 1,
+				"ServiceName": "easytravel-loadgen",
+				"TaskDefinition": {
+					"Ref": "easytravelloadgenTaskDefinition"
+				},
+				"NetworkConfiguration": {
+					"AwsvpcConfiguration": {
+						"AssignPublicIp": "ENABLED",
+						"SecurityGroups": [{
+							"Fn::GetAtt": ["easytravelloadgenSecurityGroup", "GroupId"]
+						}],
+						"Subnets": [{
+							"Ref": "PublicSubnet1ID"
+						}, {
+							"Ref": "PublicSubnet2ID"
+						}]
+					}
+				}
+			},
+			"DependsOn": [
+				"easyTravelFargateCluster",
+				"eastytravelmongodbFargateService",
+				"easytravelbackendFargateService",
+				"easytravelfrontendFargateService"
+			]
+		}
+	},
+	"Outputs": {
+		"easytravelfrontendLoadBalancer": {
+			"Value": {
+				"Fn::Join": ["", [
+					"http://",
+					{
+						"Fn::GetAtt": ["easytravelfrontendApplicationLoadBalaner", "DNSName"]
+					}
+				]]
+			}
+		}
+
+	}
+}
