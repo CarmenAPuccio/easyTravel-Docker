@@ -39,9 +39,6 @@
                 "AvailabilityZones": {
                     "default": "Availability Zones"
                 },
-                "BastionInstanceType": {
-                    "default": "Bastion Instance Type"
-                },
 				"KeyPairName": {
                     "default": "Key Pair Name"
                 },
